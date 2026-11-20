@@ -1,5 +1,5 @@
 # Default owner for anything not listed below
-*                  @argenisy28
+*                  @argenisy28 @DonGoyo03
 
 # Each area has two owners so the author is never the only possible reviewer
 /backend/          @argenisy28 @DonGoyo03
@@ -9,4 +9,4 @@
 /tools/            @argenisy28 @DonGoyo03
 
 # Repository settings
-/.github/          @argenisy28
+/.github/          @argenisy28 @DonGoyo03
