@@ -221,3 +221,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PlatformIO build output and per-computer editor files
+.pio/
+firmware/**/.vscode/
