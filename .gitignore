@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -185,6 +187,11 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
 
 # PyCharm
 #   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
@@ -221,3 +228,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PlatformIO build output and per-computer editor files
+.pio/
+firmware/**/.vscode/
