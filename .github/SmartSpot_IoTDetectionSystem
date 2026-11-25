@@ -1,0 +1,516 @@
+/*
+ * ============================================================
+ * Smart Spot - IoT Detection System
+ * Created by:
+ * - Félix X. Pagán González 
+ * - Argenis Y.  Vélez Alvarez 
+ * - Jorge C. Zapata Valentin 
+ * - Juan F. Soto López 
+ * ============================================================
+ *
+ * Controller:
+ *   ESP32-S3
+ *
+ * Parking Spot Hardware:
+ *   - HC-SR04 Ultrasonic Sensor
+ *   - Green LED
+ *   - Red LED
+ *
+ * Display:
+ *   - 0.96-inch I2C OLED
+ *   - SSD1306
+ *   - 128 x 64 pixels
+ *
+ * Parking Space Available:
+ *   Green LED = ON
+ *   Red LED   = OFF
+ *
+ * Parking Space Occupied:
+ *   Green LED = OFF
+ *   Red LED   = ON
+ *
+ * Features:
+ *   - Sequential ultrasonic measurements
+ *   - Reduced ultrasonic sensor interference
+ *   - State-change-only Serial output
+ *   - OLED parking availability display
+ *
+ * ============================================================
+ */
+
+
+// ============================================================
+// Library Includes
+// ============================================================
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+
+// ============================================================
+// Parking Spot Structure
+// ============================================================
+
+struct ParkingSpot
+{
+    int id;
+
+    int trigPin;
+    int echoPin;
+
+    int greenLedPin;
+    int redLedPin;
+
+    bool occupied;
+    bool previousOccupied;
+
+    bool initialized;
+
+    float lastDistanceCm;
+};
+
+
+// ============================================================
+// Parking Spot Definitions
+// ============================================================
+
+ParkingSpot parkingSpots[] =
+{
+    /*
+     * Parking Spot 1
+     *
+     * TRIG  -> GPIO 5
+     * ECHO  -> GPIO 4
+     * GREEN -> GPIO 6
+     * RED   -> GPIO 7
+     */
+    {1, 5, 4, 6, 7, false, false, false, -1.0},
+
+    /*
+     * Parking Spot 2
+     *
+     * TRIG  -> GPIO 9
+     * ECHO  -> GPIO 8
+     * GREEN -> GPIO 10
+     * RED   -> GPIO 11
+     */
+    {2, 9, 8, 10, 11, false, false, false, -1.0}
+};
+
+
+// Automatically calculate the number of parking spots.
+const int NUMBER_OF_SPOTS =
+    sizeof(parkingSpots) / sizeof(parkingSpots[0]);
+
+
+// ============================================================
+// Detection Configuration
+// ============================================================
+
+// Maximum detection distance for an occupied parking space.
+const float DETECTION_DISTANCE_CM = 20.0;
+
+// Maximum amount of time to wait for an ultrasonic echo.
+const unsigned long ECHO_TIMEOUT_US = 30000;
+
+// Delay between different HC-SR04 sensors.
+const unsigned long SENSOR_SEQUENCE_DELAY_MS = 60;
+
+
+// ============================================================
+// OLED Display Configuration
+// ============================================================
+
+// I2C GPIO pins.
+const int OLED_SDA_PIN = 12;
+const int OLED_SCL_PIN = 13;
+
+// OLED resolution.
+const int SCREEN_WIDTH = 128;
+const int SCREEN_HEIGHT = 64;
+
+// Common SSD1306 I2C address.
+const int OLED_ADDRESS = 0x3C;
+
+// Create the OLED display object.
+// -1 indicates that no separate reset GPIO is required.
+Adafruit_SSD1306 display(
+    SCREEN_WIDTH,
+    SCREEN_HEIGHT,
+    &Wire,
+    -1
+);
+
+
+// ============================================================
+// Function Prototypes
+// ============================================================
+
+float measureDistance(ParkingSpot &spot);
+
+void processParkingSpot(ParkingSpot &spot);
+
+void updateLEDs(ParkingSpot &spot);
+
+void updateDisplay();
+
+
+// ============================================================
+// System Initialization
+// ============================================================
+
+void setup()
+{
+    // Start serial communication.
+    Serial.begin(115200);
+
+
+    // --------------------------------------------------------
+    // Initialize I2C and OLED Display
+    // --------------------------------------------------------
+
+    Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
+
+    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS))
+    {
+        Serial.println(
+            "ERROR: OLED display initialization failed."
+        );
+
+        // Stop program execution if the OLED cannot initialize.
+        while (true)
+        {
+            delay(1000);
+        }
+    }
+
+    // Display startup message.
+    display.clearDisplay();
+
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+
+    display.setCursor(25, 25);
+    display.println("Initializing...");
+
+    display.display();
+
+
+    // --------------------------------------------------------
+    // Initialize Parking Spot Hardware
+    // --------------------------------------------------------
+
+    for (int i = 0; i < NUMBER_OF_SPOTS; i++)
+    {
+        // Configure HC-SR04 GPIOs.
+        pinMode(parkingSpots[i].trigPin, OUTPUT);
+        pinMode(parkingSpots[i].echoPin, INPUT);
+
+        // Configure LED GPIOs.
+        pinMode(parkingSpots[i].greenLedPin, OUTPUT);
+        pinMode(parkingSpots[i].redLedPin, OUTPUT);
+
+        // Ensure TRIG begins LOW.
+        digitalWrite(parkingSpots[i].trigPin, LOW);
+
+        // Initial parking state:
+        // Green ON and Red OFF.
+        digitalWrite(parkingSpots[i].greenLedPin, HIGH);
+        digitalWrite(parkingSpots[i].redLedPin, LOW);
+    }
+
+
+    // --------------------------------------------------------
+    // Serial Startup Information
+    // --------------------------------------------------------
+
+    Serial.println();
+    Serial.println("====================================");
+    Serial.println("Smart Parking Detection System");
+    Serial.println("System Started");
+    Serial.println("====================================");
+}
+
+
+// ============================================================
+// Main Program Loop
+// ============================================================
+
+void loop()
+{
+    /*
+     * Process each parking spot sequentially.
+     *
+     * Only one HC-SR04 is triggered at a time to reduce
+     * ultrasonic interference between nearby sensors.
+     */
+    for (int i = 0; i < NUMBER_OF_SPOTS; i++)
+    {
+        processParkingSpot(parkingSpots[i]);
+
+        // Allow ultrasonic signals from the previous
+        // measurement to dissipate.
+        delay(SENSOR_SEQUENCE_DELAY_MS);
+    }
+}
+
+
+// ============================================================
+// Parking Spot Processing
+// ============================================================
+
+void processParkingSpot(ParkingSpot &spot)
+{
+    // Measure the current distance.
+    float distance = measureDistance(spot);
+
+
+    // --------------------------------------------------------
+    // Validate Sensor Measurement
+    // --------------------------------------------------------
+
+    /*
+     * Ignore invalid measurements.
+     *
+     * This prevents a temporary missed echo from incorrectly
+     * changing an occupied space to FREE.
+     */
+    if (distance < 0)
+    {
+        return;
+    }
+
+
+    // --------------------------------------------------------
+    // Determine Parking State
+    // --------------------------------------------------------
+
+    // Store the most recent valid distance.
+    spot.lastDistanceCm = distance;
+
+    // Determine whether the parking space is occupied.
+    spot.occupied =
+        (distance <= DETECTION_DISTANCE_CM);
+
+
+    // --------------------------------------------------------
+    // Process State Change
+    // --------------------------------------------------------
+
+    /*
+     * Update the system only when:
+     *
+     * 1. This is the first valid measurement, or
+     * 2. The parking state has changed.
+     */
+    if (!spot.initialized ||
+        spot.occupied != spot.previousOccupied)
+    {
+        // Update this parking spot's LEDs.
+        updateLEDs(spot);
+
+
+        // ----------------------------------------------------
+        // Serial Status Output
+        // ----------------------------------------------------
+
+        Serial.print("Parking Spot ");
+        Serial.print(spot.id);
+        Serial.print(": ");
+
+        if (spot.occupied)
+        {
+            Serial.print("OCCUPIED - Distance: ");
+            Serial.print(spot.lastDistanceCm, 1);
+            Serial.println(" cm");
+        }
+        else
+        {
+            Serial.println("FREE");
+        }
+
+
+        // ----------------------------------------------------
+        // Save New Parking State
+        // ----------------------------------------------------
+
+        spot.previousOccupied = spot.occupied;
+        spot.initialized = true;
+
+
+        // ----------------------------------------------------
+        // Update OLED
+        // ----------------------------------------------------
+
+        /*
+         * The OLED is only refreshed when one of the parking
+         * spaces changes state.
+         */
+        updateDisplay();
+    }
+}
+
+
+// ============================================================
+// Ultrasonic Distance Measurement
+// ============================================================
+
+float measureDistance(ParkingSpot &spot)
+{
+    // Ensure TRIG begins LOW.
+    digitalWrite(spot.trigPin, LOW);
+    delayMicroseconds(2);
+
+
+    // --------------------------------------------------------
+    // Generate HC-SR04 Trigger Pulse
+    // --------------------------------------------------------
+
+    digitalWrite(spot.trigPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(spot.trigPin, LOW);
+
+
+    // --------------------------------------------------------
+    // Measure ECHO Pulse
+    // --------------------------------------------------------
+
+    unsigned long echoDuration = pulseIn(
+        spot.echoPin,
+        HIGH,
+        ECHO_TIMEOUT_US
+    );
+
+
+    // --------------------------------------------------------
+    // Validate ECHO
+    // --------------------------------------------------------
+
+    if (echoDuration == 0)
+    {
+        return -1.0;
+    }
+
+
+    // --------------------------------------------------------
+    // Calculate Distance
+    // --------------------------------------------------------
+
+    /*
+     * Speed of sound:
+     * approximately 0.0343 cm/us
+     *
+     * The ultrasonic signal travels:
+     *
+     * Sensor -> Object -> Sensor
+     *
+     * Therefore, the total distance is divided by two.
+     */
+    float distance =
+        (echoDuration * 0.0343) / 2.0;
+
+    return distance;
+}
+
+
+// ============================================================
+// Parking Spot LED Control
+// ============================================================
+
+void updateLEDs(ParkingSpot &spot)
+{
+    if (spot.occupied)
+    {
+        // Parking space occupied.
+        digitalWrite(spot.greenLedPin, LOW);
+        digitalWrite(spot.redLedPin, HIGH);
+    }
+    else
+    {
+        // Parking space available.
+        digitalWrite(spot.greenLedPin, HIGH);
+        digitalWrite(spot.redLedPin, LOW);
+    }
+}
+
+
+// ============================================================
+// OLED Parking Availability Display
+// ============================================================
+
+void updateDisplay()
+{
+    // Clear the previous frame.
+    display.clearDisplay();
+
+    // Configure standard text appearance.
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+
+
+    // --------------------------------------------------------
+    // Header
+    // --------------------------------------------------------
+
+    display.setCursor(4, 2);
+    display.println("Parking Availability");
+
+    // Horizontal separator.
+    display.drawLine(
+        0,
+        13,
+        SCREEN_WIDTH - 1,
+        13,
+        SSD1306_WHITE
+    );
+
+
+    // --------------------------------------------------------
+    // Parking Spot 1
+    // --------------------------------------------------------
+
+    display.setCursor(5, 24);
+    display.print("Spot 1: ");
+
+    if (!parkingSpots[0].initialized)
+    {
+        display.print("CHECKING");
+    }
+    else if (parkingSpots[0].occupied)
+    {
+        display.print("OCCUPIED");
+    }
+    else
+    {
+        display.print("FREE");
+    }
+
+
+    // --------------------------------------------------------
+    // Parking Spot 2
+    // --------------------------------------------------------
+
+    display.setCursor(5, 42);
+    display.print("Spot 2: ");
+
+    if (!parkingSpots[1].initialized)
+    {
+        display.print("CHECKING");
+    }
+    else if (parkingSpots[1].occupied)
+    {
+        display.print("OCCUPIED");
+    }
+    else
+    {
+        display.print("FREE");
+    }
+
+
+    // --------------------------------------------------------
+    // Send Frame to OLED
+    // --------------------------------------------------------
+
+    display.display();
+}
